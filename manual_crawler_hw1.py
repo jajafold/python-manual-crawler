@@ -1,9 +1,10 @@
 import socket
 from enum import Enum
+import requests
 import re
 
-
 token = 'ee5b74e38eaa4a1a80b5e4952a709afb'
+# <b><code>a99363873f444188875ffba92eb8e396</code></b>
 IP = '178.154.226.49'
 
 
@@ -19,35 +20,34 @@ class RequestMethod(Enum):
     HREF = 0,
     GET = 1,
     POST = 2,
-    FILES = 3
 
 
 def extract_request_method(method: RequestMethod) -> str:
     if method in [RequestMethod.HREF, RequestMethod.GET]:
         return 'GET'
-    elif method in [RequestMethod.POST, RequestMethod.FILES]:
+    elif method == RequestMethod.POST:
         return 'POST'
 
 
 def find_request_method(response: str) -> RequestMethod:
     if 'Перейдите по' in response:
-        return RequestMethod.HREF
+        return RequestMethod.GET
     elif 'GET' in response:
         return RequestMethod.GET
     elif 'POST' in response:
         return RequestMethod.POST
     elif 'Загрузите' in response:
-        return RequestMethod.FILES
+        return RequestMethod.POST
 
 
-def parse_address(response: str, method_info: RequestMethod) -> str:
-    if method_info is not RequestMethod.HREF:
-        address = response[response.find('<code>') + 6: response.find('</code>')]
-    else:
+def parse_address(response: str) -> str:
+    if 'href' in response:
         start_href = response.find('<a href=')
         end_href = response.find('</a>') + 5
 
         address = re.findall(r'[\'"]([^"]*)["\']', response[start_href: end_href])[0]
+    else:
+        address = response[response.find('<code>') + 6: response.find('</code>')]
 
     return address
 
@@ -68,10 +68,11 @@ def parse_table(ident: str, response: str) -> dict:
     return table
 
 
-def parse_content(response: str) -> dict:
+def parse_content(response: str):
     contents = dict()
     headings = parse_table('заголовки', response)
     cookies = parse_table('cookie', response)
+    cookies['user'] = f'{token}'
     forms = parse_table('формы', response)
     parameters = parse_table('параметры запроса', response)
     files = parse_table('файлы', response)
@@ -87,7 +88,7 @@ def parse_content(response: str) -> dict:
     if files:
         contents[ContentType.Files] = files
 
-    return contents
+    return headings, cookies, forms, parameters, files
 
 
 def receive_data(sc: socket.socket) -> str:
@@ -157,9 +158,9 @@ def step_2(sc: socket.socket, previous_response: str):
         )
 
     request = (
-        f'{extract_request_method(method_info)} {address}{params} HTTP/1.0\r\n'
-        + headings
-        + cookies
+            f'{extract_request_method(method_info)} {address}{params} HTTP/1.0\r\n'
+            + headings
+            + cookies
     )
 
     if forms:
@@ -178,21 +179,55 @@ def step_2(sc: socket.socket, previous_response: str):
     return receive_data(sc)
 
 
+def pretty_print_POST(req):
+    """
+    At this point it is completely built and ready
+    to be fired; it is "prepared".
+
+    However pay attention at the formatting used in
+    this function because it is programmed to be pretty
+    printed and may differ from the actual request.
+    """
+    print('{}\n{}\r\n{}\r\n\r\n{}'.format(
+        '-----------START-----------',
+        req.method + ' ' + req.url,
+        '\r\n'.join('{}: {}'.format(k, v) for k, v in req.headers.items()),
+        req.body.decode('utf-8'),
+    ))
+
+
 if __name__ == '__main__':
-    with socket.socket() as sc:
-        sc.connect((IP, 80))
-        sc.settimeout(2)
-        response_1 = step_1(sc)
-        print(response_1)
 
-        response_2 = step_2(sc, response_1)
-        print('2222222222222222222:', response_2)
+    response = requests.get(f'http://{IP}', cookies={
+        'user': f'{token}'
+    })
 
-        response_3 = step_2(sc, response_2)
-        print('3333333333333333333:', response_3)
+    while True:
+        if 'Секретный ключ' in response.text:
+            # print(response.text)
+            break
 
+        address = parse_address(response.text)
+        headers, cookies, forms, parameters, files = parse_content(response.text)
+        if find_request_method(response.text) == RequestMethod.GET:
+            response = requests.get(f'http://{IP}{address}',
+                                    headers=headers, cookies=cookies, data=forms, params=parameters)
+        else:
+            if files:
+                pretty_print_POST(requests.request('POST', url=f'http://{IP}{address}',
+                                                   headers=headers, cookies=cookies, data=forms, params=parameters, files=files).request)
+            response = requests.post(f'http://{IP}{address}',
+                                     headers=headers, cookies=cookies, data=forms, params=parameters, files=files)
 
-
-
-
-
+    # with socket.socket() as sc:
+    #     sc.connect((IP, 80))
+    #     sc.settimeout(2)
+    #     response_1 = step_1(sc)
+    #     print(response_1)
+    #
+    #     response_2 = step_2(sc, response_1)
+    #     print('2222222222222222222:', response_2)
+    #     requests.get()
+    #
+    #     response_3 = step_2(sc, response_2)
+    #     print('3333333333333333333:', response_3)
